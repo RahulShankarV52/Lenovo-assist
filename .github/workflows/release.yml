@@ -1,0 +1,86 @@
+name: Build and Release
+
+# This tells GitHub to ONLY run this factory when you push a version tag (like v1.0.0)
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to upload the release files
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libayatana-appindicator3-dev
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Workspace
+        run: cargo build --release
+
+      - name: Package .tar.gz (For manual installs)
+        run: |
+          mkdir -p release_tar
+          cp target/release/lenovo-assist release_tar/
+          cp target/release/lenovo-assist-tray release_tar/
+          tar -czvf lenovo-assist-linux-amd64.tar.gz -C release_tar .
+
+      - name: Package .deb (For 1-click Ubuntu/Mint installs)
+        run: |
+          mkdir -p deb_dist/usr/bin
+          mkdir -p deb_dist/DEBIAN
+          mkdir -p deb_dist/etc/polkit-1/rules.d
+          mkdir -p deb_dist/usr/share/applications
+
+          cp target/release/lenovo-assist deb_dist/usr/bin/
+          cp target/release/lenovo-assist-tray deb_dist/usr/bin/
+
+          cat <<EOF > deb_dist/DEBIAN/control
+          Package: lenovo-assist
+          Version: ${GITHUB_REF_NAME#v}
+          Architecture: amd64
+          Maintainer: Rahul Shankar V <rahulshankarv7.com>
+          Description: Memory-safe hardware daemon and tray for Lenovo laptops.
+          Depends: libgtk-3-0, libayatana-appindicator3-1, policykit-1
+          EOF
+
+          # 4. Generate the Polkit rules automatically inside the package
+          cat <<EOF > deb_dist/etc/polkit-1/rules.d/99-lenovo-assist.rules
+          polkit.addRule(function(action, subject) {
+              if (action.id == "org.freedesktop.policykit.exec" &&
+                  action.lookup("program") == "/usr/bin/lenovo-assist" &&
+                  subject.isInGroup("sudo")) {
+                  return polkit.Result.YES;
+              }
+          });
+          EOF
+
+          # 5. Generate the Desktop shortcut automatically inside the package
+          cat <<EOF > deb_dist/usr/share/applications/lenovo-assist.desktop
+          [Desktop Entry]
+          Type=Application
+          Name=Lenovo Assist
+          Exec=bash -c "sleep 5 && /usr/bin/lenovo-assist-tray"
+          Icon=preferences-system-hardware
+          Terminal=false
+          Categories=System;Utility;
+          EOF
+
+          # 6. Build the final .deb file!
+          dpkg-deb --build deb_dist lenovo-assist_${GITHUB_REF_NAME#v}_amd64.deb
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            lenovo-assist-linux-amd64.tar.gz
+            lenovo-assist_*.deb
