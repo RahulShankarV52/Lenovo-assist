@@ -1,9 +1,9 @@
 # Lenovo Assist
 
 A lightning-fast, memory-safe, root-separated hardware daemon for Lenovo laptops (Ideapad/Legion) running Linux. Built entirely in Rust.
-
 Lenovo Assist replaces bloated desktop applets with a simpler system tray utility. It dynamically monitors and controls ACPI hardware states like Conservation Mode, Fn Lock, and the physical Camera Privacy Shutter.
 
+<img width="782" height="583" alt="ScreenShotfortool" src="https://github.com/user-attachments/assets/044227a3-68c1-4c56-8012-9835dae97e1f"/><br>
 ## Features
 * **Zero-Overhead Polling:** Uses a detached OS-level heartbeat thread and native Linux `sysfs` reads to achieve 0.0% idle CPU usage.
 * **Dynamic Hardware Discovery:** Automatically hunts down and maps ACPI paths, ensuring compatibility across different Lenovo models and future Linux kernel updates.
