@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use tao::event::Event;
@@ -8,17 +9,15 @@ use tray_icon::{
     TrayIconBuilder, TrayIconEvent,
 };
 
-// --- READ STATE HELPERS ---
-
-fn find_ideapad_path() -> Option<String> {
+fn find_ideapad_path() -> Option<PathBuf> {
     let base_dir = "/sys/bus/platform/drivers/ideapad_acpi/";
     if let Ok(entries) = fs::read_dir(base_dir) {
-        for entry in entries.flatten() {
+        for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_dir() {
                 let test_file = path.join("conservation_mode");
-                if test_file.exists() {
-                    return Some(path.to_string_lossy().into_owned());
+                if test_file.is_file() {
+                    return Some(path);
                 }
             }
         }
@@ -26,7 +25,7 @@ fn find_ideapad_path() -> Option<String> {
     None
 }
 
-fn read_sysfs_state(path: &str) -> bool {
+fn read_sysfs_state(path: &Path) -> bool {
     if let Ok(file) = fs::read_to_string(path) {
         return file.trim() == "1";
     }
@@ -102,8 +101,6 @@ fn generate_icon(cam_blocked: bool, bat_on: bool, fn_on: bool) -> tray_icon::Ico
     tray_icon::Icon::from_rgba(rgba, width, height).expect("Failed to create icon")
 }
 
-// --- MAIN UI ---
-
 fn main() {
     let hw_path = match find_ideapad_path() {
         Some(path) => path,
@@ -113,8 +110,8 @@ fn main() {
         }
     };
 
-    let bat_path = format!("{}/conservation_mode", hw_path);
-    let fn_path = format!("{}/fn_lock", hw_path);
+    let bat_path = hw_path.join("conservation_mode");
+    let fn_path = hw_path.join("fn_lock");
 
     let event_loop = EventLoopBuilder::new().build();
     let proxy = event_loop.create_proxy();
@@ -179,21 +176,25 @@ fn main() {
             }
         }
 
-        if let Ok(event) = menu_channel.try_recv() {
+        while let Ok(event) = menu_channel.try_recv() {
             if event.id == toggle_battery.id() {
-                Command::new("pkexec")
+                if let Err(e) = Command::new("pkexec")
                     .arg("/usr/local/bin/lenovo-assist")
                     .arg("battery")
                     .arg("--quiet")
                     .spawn()
-                    .expect("Failed to run");
+                {
+                    eprintln!("Failed to launch command: {e}");
+                }
             } else if event.id == toggle_fnlock.id() {
-                Command::new("pkexec")
+                if let Err(e) = Command::new("pkexec")
                     .arg("/usr/local/bin/lenovo-assist")
                     .arg("fnlock")
                     .arg("--quiet")
                     .spawn()
-                    .expect("Failed to run");
+                {
+                    eprintln!("Failed to launch command: {e}");
+                }
             }
         }
 

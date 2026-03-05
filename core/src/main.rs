@@ -1,20 +1,21 @@
 use std::env::args;
 use std::fs::{self, write};
 use std::io::{Error, ErrorKind};
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-// Dynamically hunts down the correct ACPI hardware path at runtime
-fn find_ideapad_path() -> Option<String> {
+fn find_ideapad_path() -> Option<PathBuf> {
     let base_dir = "/sys/bus/platform/drivers/ideapad_acpi/";
     if let Ok(entries) = fs::read_dir(base_dir) {
-        for entry in entries.flatten() {
+        for entry in entries.filter_map(Result::ok) {
             let path = entry.path();
             if path.is_dir() {
                 let test_file = path.join("conservation_mode");
-                if test_file.exists() {
-                    return Some(path.to_string_lossy().into_owned());
+                if test_file.is_file() {
+                    return Some(path);
                 }
             }
         }
@@ -22,38 +23,44 @@ fn find_ideapad_path() -> Option<String> {
     None
 }
 
-// Helper function to dynamically find who is logged into the desktop
-fn get_active_user() -> Option<(String, String)> {
+fn get_active_user() -> Option<(u32, String)> {
+    // Changed String to u32 here
     let entries = fs::read_dir("/run/user").ok()?;
-    for entry in entries.flatten() {
+    for entry in entries.filter_map(Result::ok) {
         let uid_str = entry.file_name().into_string().unwrap_or_default();
         if let Ok(uid) = uid_str.parse::<u32>() {
             if uid >= 1000 {
                 let output = Command::new("id").arg("-un").arg(&uid_str).output().ok()?;
                 let username = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                return Some((uid_str, username));
+                return Some((uid, username));
             }
         }
     }
     None
 }
 
-// Reusable notification function for all hardware events
 fn send_desktop_notification(icon: &str, title: &str, message: &str) {
-    let (uid, username) = match get_active_user() {
+    let (uid, _username) = match get_active_user() {
         Some(user_data) => user_data,
-        None => return, // No graphical user logged in, silently exit
+        None => return,
     };
-
-    let payload = format!(
-        "DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{}/bus notify-send -u normal -t 2000 -h string:x-canonical-private-synchronous:lenovo -i {} '{}' '{}'",
-        uid, icon, title, message
-    );
-
-    Command::new("su")
-        .arg(&username)
-        .arg("-c")
-        .arg(&payload)
+    Command::new("notify-send")
+        .uid(uid)
+        .env("DISPLAY", ":0")
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path=/run/user/{}/bus", uid),
+        )
+        .arg("-u")
+        .arg("normal")
+        .arg("-t")
+        .arg("2000")
+        .arg("-h")
+        .arg("string:x-canonical-private-synchronous:lenovo")
+        .arg("-i")
+        .arg(icon)
+        .arg(title)
+        .arg(message)
         .output()
         .ok();
 }
@@ -61,7 +68,6 @@ fn send_desktop_notification(icon: &str, title: &str, message: &str) {
 fn handle_camera_notification() {
     thread::sleep(Duration::from_millis(500));
 
-    // Handle missing v4l2-ctl gracefully
     let output = match Command::new("v4l2-ctl")
         .arg("-d")
         .arg("/dev/video0")
@@ -94,7 +100,7 @@ fn handle_camera_notification() {
     send_desktop_notification(icon, title, message);
 }
 
-fn read_sysfs_toggle(path: &str) -> Result<bool, std::io::Error> {
+fn read_sysfs_toggle(path: &Path) -> Result<bool, std::io::Error> {
     let file = fs::read_to_string(path)?;
     match file.trim() {
         "1" => Ok(true),
@@ -106,13 +112,13 @@ fn read_sysfs_toggle(path: &str) -> Result<bool, std::io::Error> {
     }
 }
 
-fn write_sysfs_toggle(path: &str, enable: bool) -> Result<(), std::io::Error> {
+fn write_sysfs_toggle(path: &Path, enable: bool) -> Result<(), std::io::Error> {
     let value_to_write = if enable { "1" } else { "0" };
     write(path, value_to_write)?;
     Ok(())
 }
 
-fn toggle_feature(path: &str, feature: &str, icon_name: &str, quiet: bool) {
+fn toggle_feature(path: &Path, feature: &str, icon_name: &str, quiet: bool) {
     let current_state = match read_sysfs_toggle(path) {
         Ok(state) => state,
         Err(e) => {
@@ -146,8 +152,8 @@ fn main() {
         }
     };
 
-    let conservation_path = format!("{}/conservation_mode", hw_path);
-    let fnlock_path = format!("{}/fn_lock", hw_path);
+    let conservation_path = hw_path.join("conservation_mode");
+    let fnlock_path = hw_path.join("fn_lock");
 
     let args: Vec<String> = args().collect();
 
@@ -156,7 +162,7 @@ fn main() {
         return;
     }
 
-    let quiet = args.contains(&"--quiet".to_string());
+    let quiet = args.iter().any(|a| a == "--quiet");
 
     match args[1].as_str() {
         "battery" => toggle_feature(
